@@ -1,0 +1,517 @@
+openapi: 3.1.0
+info:
+  title: Mailprobe API
+  version: 0.1.0
+  summary: Email verification over HTTP.
+  description: |
+    Verify email addresses before you send to them. Every address goes through, cheapest check first:
+
+    1. **Syntax** – pragmatic RFC 5321/5322 rules, IDN domains converted to punycode.
+    2. **Disposable / role / free-provider** flags and **typo suggestions** (`gmial.com` → `gmail.com`).
+    3. **DNS** – MX lookup with RFC 5321 implicit-MX fallback and RFC 7505 null-MX detection.
+    4. **SMTP** – `RCPT TO` probe without sending mail, with catch-all detection.
+
+    Single checks are synchronous (`POST /v1/verify`). Lists go through `POST /v1/jobs`, which returns
+    immediately with `202 Accepted`; poll the job and fetch results when `status` is `completed`.
+
+    ### Authentication
+    Send your key as `Authorization: Bearer mp_live_...` (or `X-API-Key`). Create one with `POST /v1/signup`.
+
+    ### Credits
+    Each verification costs one credit. Duplicates within an upload are removed before charging.
+    A request that needs more credits than you have fails with `402` and charges nothing.
+
+    ### Rate limits
+    Per-key token bucket (default burst 60, 10 req/s sustained). Every authenticated response carries
+    `RateLimit-Limit` and `RateLimit-Remaining`; a `429` also carries `Retry-After` (seconds).
+
+    ### Pagination
+    List endpoints are keyset-paginated: pass the `next_cursor` from one page as `cursor` to get the next.
+    `next_cursor` is `null` on the last page. Cursors are opaque.
+
+    ### Errors
+    Every error has the shape `{ "error": { "code": "...", "message": "...", "details": ... } }`.
+servers:
+  - url: http://localhost:4000
+    description: Local (docker compose)
+security:
+  - bearer: []
+tags:
+  - name: Account
+  - name: Verification
+  - name: Jobs
+  - name: System
+
+paths:
+  /v1/signup:
+    post:
+      tags: [Account]
+      summary: Create an account and its first API key
+      description: Rate-limited per IP. The key is returned once and never shown again.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email, example: you@company.com }
+                name: { type: string, maxLength: 120, example: Ada }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  account: { $ref: '#/components/schemas/Account' }
+                  api_key: { type: string, example: mp_live_8fK2pQ0vXc4Lm9TzR1aB6dN3sW7yH5eJ }
+                  note: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/me:
+    get:
+      tags: [Account]
+      summary: Current account and credit balance
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Account' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/keys:
+    get:
+      tags: [Account]
+      summary: List API keys
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/ApiKey' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Account]
+      summary: Create an API key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 80, example: CI pipeline }
+      responses:
+        '201':
+          description: Created. `api_key` is shown only in this response.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiKey'
+                  - type: object
+                    properties:
+                      api_key: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/keys/{id}:
+    delete:
+      tags: [Account]
+      summary: Revoke an API key
+      description: Revocation is immediate. The account's last active key cannot be revoked.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '204': { description: Revoked }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /v1/verify:
+    post:
+      tags: [Verification]
+      summary: Verify one address (synchronous)
+      description: |
+        Costs one credit. Usually returns in under two seconds, but a slow or greylisting mail server
+        can push this to the SMTP timeout; use a job for anything more than a handful of addresses.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, example: jane.doe@acme.com }
+      responses:
+        '200':
+          description: Verdict
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Verification' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/InsufficientCredits' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/jobs:
+    post:
+      tags: [Jobs]
+      summary: Start a bulk verification job
+      description: |
+        Send either a CSV file as the raw body (`Content-Type: text/csv`) or JSON. For CSV, the email column
+        is the one headed `email` (or similar); otherwise the column where most cells contain `@`. A plain
+        list of addresses, one per line, also works.
+
+        ```
+        curl -X POST "$API/v1/jobs?name=leads.csv" \
+          -H "Authorization: Bearer $KEY" -H "Content-Type: text/csv" --data-binary @leads.csv
+        ```
+      parameters:
+        - name: name
+          in: query
+          description: Display name for CSV uploads (JSON uploads use the `name` field).
+          schema: { type: string, maxLength: 255 }
+      requestBody:
+        required: true
+        content:
+          text/csv:
+            schema: { type: string }
+            example: "name,email\nJane,jane@acme.com\nBob,bob@acme.com\n"
+          application/json:
+            schema:
+              type: object
+              required: [emails]
+              properties:
+                name: { type: string, maxLength: 255 }
+                emails:
+                  type: array
+                  minItems: 1
+                  items: { type: string }
+      responses:
+        '202':
+          description: Accepted and queued.
+          headers:
+            Location:
+              schema: { type: string }
+              description: URL of the job resource.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/InsufficientCredits' }
+        '413':
+          description: Too many rows or body too large.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: No addresses found in the upload.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    get:
+      tags: [Jobs]
+      summary: List jobs, newest first
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: A page of jobs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Job' }
+                  next_cursor: { type: [string, 'null'] }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/jobs/{id}:
+    get:
+      tags: [Jobs]
+      summary: Job status and counts
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/jobs/{id}/results:
+    get:
+      tags: [Jobs]
+      summary: Page through a job's results
+      description: Rows still in progress have `state` `pending` or `retry` and a null `status`.
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+        - $ref: '#/components/parameters/StatusFilter'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: A page of results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/ResultRow' }
+                  next_cursor: { type: [string, 'null'] }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/jobs/{id}/export.csv:
+    get:
+      tags: [Jobs]
+      summary: Download results as CSV
+      description: Streamed; works for any job size. Filter with `status` to export, say, only deliverable addresses.
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+        - $ref: '#/components/parameters/StatusFilter'
+      responses:
+        '200':
+          description: CSV file
+          content:
+            text/csv:
+              schema: { type: string }
+              example: "email,status,reason,score,disposable,role,free,catch_all,mx_host,smtp_code,suggestion,verified_at\r\njane@acme.com,deliverable,accepted,95,false,false,false,false,mx1.acme.com,250,,2026-10-29T13:00:00.000Z\r\n"
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/usage:
+    get:
+      tags: [Account]
+      summary: Daily verification counts
+      parameters:
+        - name: days
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 365, default: 30 }
+      responses:
+        '200':
+          description: One entry per day with activity (UTC), oldest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        day: { type: string, format: date }
+                        verifications: { type: integer }
+                        deliverable: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /healthz:
+    get:
+      tags: [System]
+      summary: Liveness and dependency health
+      security: []
+      responses:
+        '200':
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [ok, degraded] }
+                  mysql: { type: string, enum: [up, down] }
+                  redis: { type: string, enum: [up, down] }
+        '503': { description: A dependency is down }
+
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      bearerFormat: mp_live_<32 base62 chars>
+
+  parameters:
+    JobId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[0-9A-HJKMNP-TV-Z]{26}$' }
+      example: 01JBQ3M7Y9X2K5N8P4R6T0VWZC
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+    Cursor:
+      name: cursor
+      in: query
+      schema: { type: string }
+    StatusFilter:
+      name: status
+      in: query
+      schema: { $ref: '#/components/schemas/Status' }
+
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Missing, malformed or revoked API key
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Not found (or not yours)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: Conflicts with current state
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    InsufficientCredits:
+      description: Not enough credits. Nothing was charged.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { code: insufficient_credits, message: this request needs 120 credits; 100 available, details: { needed: 120, available: 100 } }
+    RateLimited:
+      description: Rate limit exceeded
+      headers:
+        Retry-After:
+          schema: { type: integer }
+          description: Seconds until a request will be accepted.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Status:
+      type: string
+      enum: [deliverable, undeliverable, risky, unknown]
+      description: |
+        - `deliverable` – the mail server accepted the mailbox.
+        - `undeliverable` – bad syntax, no mail server, or the mailbox does not exist.
+        - `risky` – exists but sending is unwise: catch-all domain, disposable provider, or mailbox full.
+        - `unknown` – no definitive answer (server blocked the probe, timed out after retries, or SMTP disabled).
+    Reason:
+      type: string
+      enum:
+        [accepted, invalid_syntax, no_mx, null_mx, mailbox_not_found, rejected, catch_all, disposable, mailbox_full,
+         greylisted, throttled, smtp_blocked, smtp_unreachable, smtp_timeout, smtp_error, dns_error, smtp_disabled]
+
+    Account:
+      type: object
+      properties:
+        email: { type: string }
+        name: { type: [string, 'null'] }
+        credits: { type: integer }
+        created_at: { type: string, format: date-time }
+
+    ApiKey:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        prefix: { type: string, example: mp_live_8fK2 }
+        last_used_at: { type: [string, 'null'], format: date-time }
+        revoked_at: { type: [string, 'null'], format: date-time }
+        created_at: { type: string, format: date-time }
+        current: { type: boolean, description: The key used for this request. }
+
+    Verification:
+      type: object
+      properties:
+        email: { type: string, description: Normalized address (or the input if the syntax was invalid). }
+        status: { $ref: '#/components/schemas/Status' }
+        reason: { $ref: '#/components/schemas/Reason' }
+        score: { type: integer, minimum: 0, maximum: 100, description: Heuristic sendability score. }
+        syntax_error: { type: [string, 'null'] }
+        disposable: { type: boolean }
+        role: { type: boolean, description: 'Function mailbox such as info@ or support@.' }
+        free: { type: boolean, description: Consumer provider such as gmail.com. }
+        catch_all: { type: [boolean, 'null'] }
+        mx_host: { type: [string, 'null'] }
+        smtp_code: { type: [integer, 'null'] }
+        smtp_message: { type: [string, 'null'] }
+        suggestion: { type: [string, 'null'], description: Likely intended domain if this one looks mistyped. }
+
+    Job:
+      type: object
+      properties:
+        id: { type: string, description: ULID }
+        name: { type: [string, 'null'] }
+        status: { type: string, enum: [queued, processing, completed, failed] }
+        total: { type: integer }
+        processed: { type: integer }
+        progress: { type: number, minimum: 0, maximum: 1 }
+        counts:
+          type: object
+          properties:
+            deliverable: { type: integer }
+            undeliverable: { type: integer }
+            risky: { type: integer }
+            unknown: { type: integer }
+        duplicates_removed: { type: integer }
+        created_at: { type: string, format: date-time }
+        started_at: { type: [string, 'null'], format: date-time }
+        completed_at: { type: [string, 'null'], format: date-time }
+
+    ResultRow:
+      type: object
+      properties:
+        email: { type: string }
+        state: { type: string, enum: [pending, retry, done] }
+        status: { oneOf: [{ $ref: '#/components/schemas/Status' }, { type: 'null' }] }
+        reason: { type: [string, 'null'] }
+        score: { type: [integer, 'null'] }
+        disposable: { type: boolean }
+        role: { type: boolean }
+        free: { type: boolean }
+        catch_all: { type: [boolean, 'null'] }
+        mx_host: { type: [string, 'null'] }
+        smtp_code: { type: [integer, 'null'] }
+        suggestion: { type: [string, 'null'] }
+        attempts: { type: integer }
+        verified_at: { type: [string, 'null'], format: date-time }
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, example: invalid_request }
+            message: { type: string }
+            details: {}
