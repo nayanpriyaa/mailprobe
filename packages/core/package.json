@@ -1,0 +1,30 @@
+{
+  "name": "@mailprobe/core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Zero-dependency email verification engine: syntax, DNS/MX, disposable/role/free detection, typo suggestions and batched SMTP probing.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "development": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "data"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --conditions=development --test test/*.test.ts",
+    "disposable:update": "sh scripts/update-disposable.sh"
+  },
+  "devDependencies": {
+    "@mailprobe/fake-smtp": "0.1.0",
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
