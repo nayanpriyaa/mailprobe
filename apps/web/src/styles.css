@@ -1,0 +1,59 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'Public Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+  --color-paper: #eef1f4;
+  --color-surface: #ffffff;
+  --color-ink: #1b2430;
+  --color-muted: #566272;
+  --color-line: #d3dae2;
+  --color-brand: #2f4ba8;
+  --color-brand-ink: #ffffff;
+
+  /* Verdicts: the four bins every address is sorted into. */
+  --color-ok: #1f7a5a;
+  --color-bad: #b3261e;
+  --color-warn: #9a5b0a;
+  --color-unk: #6b7785;
+  --color-pending: #dfe4ea;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-paper: #12171e;
+    --color-surface: #1a212b;
+    --color-ink: #e6eaef;
+    --color-muted: #9aa5b3;
+    --color-line: #2c3644;
+    --color-brand: #7d95e8;
+    --color-brand-ink: #0f1420;
+    --color-ok: #4cb38b;
+    --color-bad: #ef7b73;
+    --color-warn: #e0a548;
+    --color-unk: #8d98a6;
+    --color-pending: #2a3340;
+  }
+}
+
+html {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-feature-settings: 'tnum' 1; /* tabular figures: counts line up while they change */
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0ms !important;
+    animation-duration: 0ms !important;
+  }
+}
