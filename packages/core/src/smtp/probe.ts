@@ -157,9 +157,10 @@ async function runSession(
   // Try MX hosts in preference order; fall through only on connection-level failures.
   for (const mx of mxHosts) {
     const target = opts.hostOverride ?? mx;
-    const release = limiter ? await limiter.acquire(target) : null;
+    // Limit by the real MX even when routed elsewhere, so dev/bench behave like production.
+    const release = limiter ? await limiter.acquire(mx) : null;
     if (limiter && release === null) {
-      lastError = { kind: 'error', error: 'throttled', detail: `no free slot for ${target}` };
+      lastError = { kind: 'error', error: 'throttled', detail: `no free slot for ${mx}` };
       continue;
     }
 

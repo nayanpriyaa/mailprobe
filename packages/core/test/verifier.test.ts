@@ -129,6 +129,20 @@ describe('Verifier', () => {
     assert.equal(server.stats.rcptCommands - rcptBefore, 1);
   });
 
+  it('coalesces concurrent MX lookups for the same domain', async () => {
+    let calls = 0;
+    const resolver = {
+      lookup: async () => {
+        calls++;
+        await new Promise((r) => setTimeout(r, 20));
+        return mx('mx.acme.test');
+      },
+    };
+    const v = new Verifier({ resolver, disposable: new DomainSet([]) }, { smtp: null });
+    await Promise.all(Array.from({ length: 10 }, (_, i) => v.verify(`u${i}@acme.test`)));
+    assert.equal(calls, 1);
+  });
+
   it('respects the per-host connection limit under load', async () => {
     const latent = new FakeSmtpServer({ latencyMs: 5 });
     const p = await latent.start();

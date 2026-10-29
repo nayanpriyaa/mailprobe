@@ -219,7 +219,25 @@ export class Verifier {
     });
   }
 
-  private async lookupMx(domain: string): Promise<MxLookup> {
+  /**
+   * Single-flight: concurrent lookups of the same domain (parallel chunks of one big
+   * company's addresses) share one in-flight DNS query instead of stampeding the
+   * resolver before the first answer reaches the cache.
+   */
+  private readonly inflightMx = new Map<string, Promise<MxLookup>>();
+
+  private lookupMx(domain: string): Promise<MxLookup> {
+    const pending = this.inflightMx.get(domain);
+    if (pending) {
+      this.metrics.mxCacheHits++;
+      return pending;
+    }
+    const p = this.lookupMxUncoalesced(domain).finally(() => this.inflightMx.delete(domain));
+    this.inflightMx.set(domain, p);
+    return p;
+  }
+
+  private async lookupMxUncoalesced(domain: string): Promise<MxLookup> {
     const key = `mx:${domain}`;
     const cached = this.deps.cache ? await this.deps.cache.get<MxLookup>(key) : undefined;
     if (cached) {
