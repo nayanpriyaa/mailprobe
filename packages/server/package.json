@@ -1,0 +1,32 @@
+{
+  "name": "@mailprobe/server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Shared server-side code for the API and worker: config, MySQL, Redis, queue, repositories.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "development": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && cp src/redis/*.lua dist/redis/",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "tsx --conditions=development --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@mailprobe/core": "0.1.0",
+    "bullmq": "^5.34.0",
+    "ioredis": "^5.4.2",
+    "mysql2": "^3.12.0",
+    "pino": "^9.6.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
