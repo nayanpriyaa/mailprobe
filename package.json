@@ -13,10 +13,26 @@
   },
   "scripts": {
     "build:libs": "npm run build -w @mailprobe/fake-smtp && npm run build -w @mailprobe/core",
-    "build": "npm run build:libs && npm run build --workspaces --if-present",
+    "build": "npm run build:libs && npm run build -w @mailprobe/server && npm run build -w @mailprobe/worker && npm run build -w @mailprobe/api && npm run build -w @mailprobe/web",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
-    "lint": "eslint ."
+    "dev:api": "npm run dev -w @mailprobe/api",
+    "dev:worker": "npm run dev -w @mailprobe/worker",
+    "dev:web": "npm run dev -w @mailprobe/web",
+    "dev:smtp": "tsx --conditions=development packages/fake-smtp/src/cli.ts --port 2525 --latency 20,80 --catch-all bigcorp.io",
+    "migrate": "npm run migrate:dev -w @mailprobe/api",
+    "bench:engine": "tsx --conditions=development bench/engine.ts",
+    "bench:pipeline": "tsx bench/pipeline.ts",
+    "bench:explain": "tsx --conditions=development bench/explain.ts",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "mysql2": "^3.12.0",
+    "prettier": "^3.4.2",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
 }

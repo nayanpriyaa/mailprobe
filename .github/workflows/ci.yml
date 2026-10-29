@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=3s --health-timeout=3s --health-retries=40
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: --health-cmd="redis-cli ping" --health-interval=3s --health-retries=20
+    env:
+      TEST_DATABASE_URL: mysql://root:root@127.0.0.1:3306/mailprobe_test
+      TEST_REDIS_URL: redis://127.0.0.1:6379/15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install
+        run: if [ -f package-lock.json ]; then npm ci; else npm install; fi
+      - name: Build libraries
+        run: npm run build:libs && npm run build -w @mailprobe/server -w @mailprobe/worker
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Unit tests (core engine, against the fake SMTP server)
+        run: npm test -w @mailprobe/core
+      - name: Unit tests (server helpers)
+        run: npm test -w @mailprobe/server
+      - name: End-to-end tests (API + worker + MySQL + Redis)
+        run: npm test -w @mailprobe/api
+      - name: Lint OpenAPI spec
+        run: npx --yes @redocly/cli@1 lint apps/api/openapi.yaml --skip-rule operation-4xx-response --skip-rule no-server-example.com
+      - name: Build dashboard
+        run: npm run build -w @mailprobe/web
+      - name: Engine benchmark (smoke)
+        run: npx tsx --conditions=development bench/engine.ts 1000 100 10
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build server image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build dashboard image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          push: false

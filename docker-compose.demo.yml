@@ -1,0 +1,30 @@
+# Offline demo: every probe goes to the fake SMTP server and DNS comes from fixtures,
+# so the whole pipeline (greylisting retries, catch-all detection, bounces) runs on
+# a laptop with port 25 blocked and no internet.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.demo.yml up --build
+
+x-demo-env: &demo-env
+  NODE_ENV: development # allows SMTP_HOST_OVERRIDE, which production refuses
+  SMTP_PROBE: 'true'
+  SMTP_HOST_OVERRIDE: fake-smtp
+  SMTP_PORT: '2525'
+  DNS_MODE: fixtures
+  DNS_FIXTURES_PATH: /app/deploy/demo-dns.json
+  RETRY_BASE_DELAY_MS: '10000' # greylisted addresses settle in ~10 s instead of minutes
+  # The wildcard DNS fixture points every domain at the same two MX names, which the
+  # per-host limiter would otherwise squeeze to 3 sessions total.
+  SMTP_MAX_PER_HOST: '20'
+
+services:
+  fake-smtp:
+    build: .
+    command: ['node', 'packages/fake-smtp/dist/cli.js', '--port', '2525', '--latency', '30,120', '--catch-all', 'bigcorp.io,northwind.co']
+
+  api:
+    environment: *demo-env
+    depends_on: [fake-smtp]
+
+  worker:
+    environment: *demo-env
+    depends_on: [fake-smtp]

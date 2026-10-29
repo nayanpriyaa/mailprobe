@@ -1,0 +1,14 @@
+{
+  "gmial.com": { "kind": "none" },
+  "gmail.co": { "kind": "none" },
+  "yaho.com": { "kind": "none" },
+  "no-mail.example": { "kind": "null_mx" },
+  "*": {
+    "kind": "mx",
+    "implicit": false,
+    "hosts": [
+      { "exchange": "mx1.demo-mail.test", "priority": 10 },
+      { "exchange": "mx2.demo-mail.test", "priority": 20 }
+    ]
+  }
+}

@@ -1,0 +1,97 @@
+# Full stack: MySQL, Redis, migrations, API, worker and dashboard.
+#
+#   docker compose up --build                                       # real DNS; SMTP probing off by default
+#   docker compose -f docker-compose.yml -f docker-compose.demo.yml up --build   # fully offline demo
+#
+# Dashboard: http://localhost:5173   API: http://localhost:4000   Docs: http://localhost:4000/docs
+
+x-app-env: &app-env
+  NODE_ENV: production
+  DATABASE_URL: mysql://mailprobe:mailprobe@mysql:3306/mailprobe
+  REDIS_URL: redis://redis:6379
+  CORS_ORIGINS: http://localhost:5173
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  # Most home and cloud networks block outbound port 25, so mailbox probing is
+  # opt-in. Results then stop at the DNS layer with reason "smtp_disabled".
+  SMTP_PROBE: ${SMTP_PROBE:-false}
+  SMTP_HELO_NAME: ${SMTP_HELO_NAME:-verify.mailprobe.local}
+  SMTP_MAIL_FROM: ${SMTP_MAIL_FROM:-verify@mailprobe.local}
+
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: mailprobe
+      MYSQL_USER: mailprobe
+      MYSQL_PASSWORD: mailprobe
+      MYSQL_ROOT_PASSWORD: root
+    command: ['--default-time-zone=+00:00', '--innodb-buffer-pool-size=256M']
+    ports: ['3306:3306']
+    volumes: [mysql-data:/var/lib/mysql]
+    healthcheck:
+      test: ['CMD', 'mysqladmin', 'ping', '-h', '127.0.0.1', '-uroot', '-proot']
+      interval: 3s
+      timeout: 3s
+      retries: 40
+
+  redis:
+    image: redis:7-alpine
+    # AOF so queued and delayed (greylisting retry) jobs survive a Redis restart.
+    command: ['redis-server', '--appendonly', 'yes', '--maxmemory-policy', 'noeviction']
+    ports: ['6379:6379']
+    volumes: [redis-data:/data]
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    build: .
+    command: ['node', 'apps/api/dist/migrate.js']
+    environment:
+      <<: *app-env
+      MIGRATIONS_DIR: /app/db/migrations
+    depends_on:
+      mysql: { condition: service_healthy }
+
+  api:
+    build: .
+    command: ['node', 'apps/api/dist/server.js']
+    environment:
+      <<: *app-env
+      PORT: '4000'
+    ports: ['4000:4000']
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:4000/healthz']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  worker:
+    build: .
+    command: ['node', 'apps/worker/dist/main.js']
+    environment:
+      <<: *app-env
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    # Scale horizontally: docker compose up --scale worker=4
+    stop_grace_period: 60s
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        VITE_API_URL: http://localhost:4000
+    ports: ['5173:80']
+    depends_on: [api]
+
+volumes:
+  mysql-data:
+  redis-data:
