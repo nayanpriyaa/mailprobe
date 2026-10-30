@@ -7,7 +7,7 @@ export function parseCsv(text: string): string[][] {
   let row: string[] = [];
   let field = '';
   let inQuotes = false;
-  let i = text.charCodeAt(0) === 0xfeff ? 1 : 0; // strip UTF-8 BOM (Excel adds one)
+  let i = text.charCodeAt(0) === 0xfeff ? 1 : 0; 
 
   const endField = () => {
     row.push(field);
@@ -15,7 +15,7 @@ export function parseCsv(text: string): string[][] {
   };
   const endRow = () => {
     endField();
-    if (!(row.length === 1 && row[0] === '')) rows.push(row); // skip blank lines
+    if (!(row.length === 1 && row[0] === '')) rows.push(row); 
     row = [];
   };
 

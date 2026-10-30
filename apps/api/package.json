@@ -18,7 +18,7 @@
     "bullmq": "^5.34.0",
     "express": "^5.1.0",
     "pino-http": "^10.4.0",
-    "zod": "^3.24.1"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@mailprobe/fake-smtp": "0.1.0",
